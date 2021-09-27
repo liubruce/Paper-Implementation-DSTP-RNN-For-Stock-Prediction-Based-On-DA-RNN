@@ -13,9 +13,11 @@ from torch import nn
 from torch import optim
 import torch.nn.functional as F
 import pandas as pd
-import matplotlib
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+device=torch.device("cpu")
 
 def count_values(truth,pred):
     count_avg = 0
@@ -107,7 +109,10 @@ class Encoder(nn.Module):
                 x.view(-1, self.encoder_num_hidden * 2 + self.T - 1)) 
          
             # get weights by softmax
-            alpha = F.softmax(x.view(-1, self.input_size))# 233x363
+            # print('self.input_size=', self.input_size, x.view(-1, self.input_size).dim())
+            input_softmax = x.view(-1, self.input_size)
+            # print(input_softmax.shape,input_softmax[0:1])
+            alpha = F.softmax(input_softmax, dim=1)# 233x363
             
             # get new input for LSTM
             x_tilde = torch.mul(alpha, X[:, t, :]) #233x363
@@ -131,7 +136,7 @@ class Encoder(nn.Module):
             x2 = self.encoder_attn2( 
                 x2.view(-1, self.encoder_num_hidden * 2 + 2*self.T - 2)) 
             
-            alpha2 = F.softmax(x2.view(-1, self.input_size))# 233x363
+            alpha2 = F.softmax(x2.view(-1, self.input_size),  dim=1)# 233x363
             
             x_tilde2 = torch.mul(alpha2, x_tilde)
             
@@ -195,7 +200,7 @@ class Decoder(nn.Module):
                            X_encoed), dim=2)
 
             beta = F.softmax(self.attn_layer(
-                x.view(-1, 2 * self.decoder_num_hidden + self.encoder_num_hidden)).view(-1, self.T - 1))
+                x.view(-1, 2 * self.decoder_num_hidden + self.encoder_num_hidden)).view(-1, self.T - 1), dim=1)
             # Eqn. 14: compute context vector
             # batch_size * encoder_hidden_size
             context = torch.bmm(beta.unsqueeze(1), X_encoed)[:, 0, :]
@@ -264,8 +269,8 @@ class DSTP_rnn(nn.Module):
         self.Decoder = Decoder(encoder_num_hidden=encoder_num_hidden,
                                decoder_num_hidden=decoder_num_hidden,
                                T=T)
-        self.Encoder = self.Encoder.cuda()
-        self.Decoder = self.Decoder.cuda()
+        self.Encoder = self.Encoder.to(device) #.cuda()
+        self.Decoder = self.Decoder.to(device) #.cuda()
         # Loss function
         self.criterion_price = nn.MSELoss()
         
@@ -284,7 +289,8 @@ class DSTP_rnn(nn.Module):
                                             lr=self.learning_rate)
         
         # Training set
-        self.train_timesteps = int(self.X.shape[0] * 0.8) 
+        self.train_timesteps = int(self.X.shape[0] * 0.8)
+        self.y = self.y - np.mean(self.y[:self.train_timesteps])
         self.input_size = self.X.shape[1]
         
 
@@ -339,15 +345,25 @@ class DSTP_rnn(nn.Module):
                         param_group['lr'] = param_group['lr'] * 0.9
                 self.epoch_losses[epoch] = np.mean(self.iter_losses[range(epoch * iter_per_epoch, (epoch + 1) * iter_per_epoch)])
 
-            if epoch % 10 == 0:
+            if (epoch + 1) % 10 == 0:
                 print ("Epochs: ", epoch, " Iterations: ", n_iter, " Loss: ", self.epoch_losses[epoch])
-            if epoch % 1000 == 0 and epoch!=0 :
-              torch.save(model.state_dict(), 'dstprnn_model_{}.pkl'.format(epoch))
-          
-   
-               
-            
-
+            # if epoch % 1000 == 0 and epoch!=0 :
+              # torch.save(model.state_dict(), 'dstprnn_model_{}.pkl'.format(epoch))
+            if (epoch + 1) % 10 == 0:
+                y_train_pred = self.test(on_train=True)
+                y_test_pred = self.test(on_train=False)
+                y_pred = np.concatenate((y_train_pred, y_test_pred))
+                plt.ioff()
+                plt.figure()
+                plt.title('DSTP_RNN')
+                # print('self.y=', self.y)
+                plt.plot(range(1, 1 + len(self.y)), self.y, label="True")
+                plt.plot(range(self.T, len(y_train_pred) + self.T),
+                         y_train_pred, label='Predicted - Train')
+                plt.plot(range(self.T + len(y_train_pred), len(self.y) + 1),
+                         y_test_pred, label='Predicted - Test')
+                plt.legend(loc='lower left')
+                plt.show()
 
     def train_forward(self, X, y_prev, y_gt):
         # zero gradients
@@ -355,15 +371,15 @@ class DSTP_rnn(nn.Module):
         self.decoder_optimizer.zero_grad()
         
         input_weighted, input_encoded = self.Encoder(
-            Variable(torch.from_numpy(X).type(torch.FloatTensor).cuda()),Variable(torch.from_numpy(y_prev).type(torch.FloatTensor).cuda())) #cuda
+            Variable(torch.from_numpy(X).type(torch.FloatTensor).to(device)),Variable(torch.from_numpy(y_prev).type(torch.FloatTensor).to(device))) #cuda
         y_pred_price = self.Decoder(input_encoded, Variable(
-            torch.from_numpy(y_prev).type(torch.FloatTensor)).cuda())#cuda
+            torch.from_numpy(y_prev).type(torch.FloatTensor)).to(device))#cuda
 
         
         y_true_price = torch.from_numpy(
             y_gt).type(torch.FloatTensor)
         
-        y_true_price =y_true_price.view(-1, 1).cuda() #cuda
+        y_true_price =y_true_price.view(-1, 1).to(device) #cuda
         
         loss = self.criterion_price(y_pred_price, y_true_price)
         
@@ -411,8 +427,8 @@ class DSTP_rnn(nn.Module):
                         batch_idx[j] + self.train_timesteps - self.T, batch_idx[j] + self.train_timesteps - 1)]
 
                     
-            y_history = Variable(torch.from_numpy(y_history).type(torch.FloatTensor).cuda())
-            _, input_encoded = self.Encoder(Variable(torch.from_numpy(X).type(torch.FloatTensor).cuda()),Variable(y_history).cuda()) #cuda
+            y_history = Variable(torch.from_numpy(y_history).type(torch.FloatTensor).to(device))
+            _, input_encoded = self.Encoder(Variable(torch.from_numpy(X).type(torch.FloatTensor).to(device)),Variable(y_history).to(device)) #cuda
 
             y_pred_price_output = self.Decoder(input_encoded, y_history)
             
@@ -423,10 +439,18 @@ class DSTP_rnn(nn.Module):
             i += self.batch_size
         return y_pred_price
 
-X, y= read_data("2324.TW.csv", debug=False)
-model = DSTP_rnn(X, y, 10 , 128, 128, 128, 0.001, 7000)
-model.train()
-torch.save(model.state_dict(), 'dstprnn_model.pkl')
-pred = model.test()
-print(pred)   
-   
+def main():
+    # X, y= read_data("2324.TW.csv", debug=False)
+    X, y= read_data_nasdaq("nasdaq100_padding.csv", debug=True)
+    # print(y)
+    # exit(0)
+    print(X.shape, y.shape, X.shape[1])
+    model = DSTP_rnn(X, y, 10 , 128, 128, 128, 0.001, 50)
+    model.train()
+    # torch.save(model.state_dict(), 'dstprnn_model.pkl')
+    pred = model.test()
+    # print(pred)
+
+
+if __name__ == '__main__':
+    main()
