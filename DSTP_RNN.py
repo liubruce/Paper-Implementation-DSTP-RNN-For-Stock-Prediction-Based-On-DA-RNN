@@ -16,6 +16,7 @@ import pandas as pd
 # import matplotlib
 # matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from torchmetrics import MeanSquaredError, MeanAbsoluteError, MeanAbsolutePercentageError
 
 device=torch.device("cpu")
 
@@ -404,10 +405,8 @@ class DSTP_rnn(nn.Module):
 
         if on_train:
             y_pred_price = np.zeros(self.train_timesteps - self.T + 1)
-            
         else:
             y_pred_price = np.zeros(self.X.shape[0] - self.train_timesteps)
-
         i = 0
         while i < len(y_pred_price):
             batch_idx = np.array(range(len(y_pred_price)))[i: (i + self.batch_size)]
@@ -433,11 +432,22 @@ class DSTP_rnn(nn.Module):
             y_pred_price_output = self.Decoder(input_encoded, y_history)
             
             y_pred_price[i:(i + self.batch_size)] = y_pred_price_output.cpu().detach().numpy()[:, 0]
-            
-           
-            
             i += self.batch_size
+        # calculate metrics
+        if not on_train:
+            mse,mae, mape = self.calculate_metrics(y_pred_price, self.y[range(self.train_timesteps, self.X.shape[0],1)])
+            print("MSE， MAE, MAPE of Test is :", mse,mae, mape)
         return y_pred_price
+
+    def calculate_metrics(self, preds, target):
+        preds = torch.tensor(preds)
+        target = torch.tensor(target)
+        mean_squared_error = MeanSquaredError()
+        mse = mean_squared_error(preds, target)
+        mae = MeanAbsoluteError()(preds, target)
+        mape = MeanAbsolutePercentageError()(preds, target)
+        return mse.item(), mae.item(), mape.item()
+
 
 def main():
     # X, y= read_data("2324.TW.csv", debug=False)
